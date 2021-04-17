@@ -1,6 +1,6 @@
 #include <queue.h>
 #include "skel.h"
-
+#include "time.h"
 // 4 sets of 3 digit numbers + 4 dots
 #define ADDR_MAXLEN 4*3 + 4
 
@@ -23,6 +23,132 @@ struct arp_entry {
     uint8_t mac[6];
 };
 
+//https://www.geeksforgeeks.org/binary-search-tree-set-1-search-and-insertion/
+struct bst_node { 
+    struct rtable_entry key;
+    struct bst_node* left;
+    struct bst_node* right;
+    int height;
+};
+
+int max(int a, int b)
+{
+    return (a > b)? a : b;
+}
+
+int height(struct bst_node *N)
+{
+    if (N == NULL)
+        return 0;
+    return N->height;
+}
+
+struct bst_node* newNode(struct rtable_entry item)
+{
+    struct bst_node* temp = (struct bst_node*)malloc(sizeof(struct bst_node));
+    temp->key = item;
+    temp->left = NULL;
+    temp->right = NULL;
+    temp->height = 1;
+    return temp;
+}
+
+struct bst_node *rightRotate(struct bst_node *y)
+{
+    struct bst_node *x = y->left;
+    struct bst_node *T2 = x->right;
+ 
+    // Perform rotation
+    x->right = y;
+    y->left = T2;
+ 
+    // Update heights
+    y->height = max(height(y->left), height(y->right))+1;
+    x->height = max(height(x->left), height(x->right))+1;
+ 
+    // Return new root
+    return x;
+}
+
+struct bst_node *leftRotate(struct bst_node *x)
+{
+    struct bst_node *y = x->right;
+    struct bst_node *T2 = y->left;
+ 
+    // Perform rotation
+    y->left = x;
+    x->right = T2;
+ 
+    //  Update heights
+    x->height = max(height(x->left), height(x->right))+1;
+    y->height = max(height(y->left), height(y->right))+1;
+ 
+    // Return new root
+    return y;
+}
+
+int getBalance(struct bst_node *N)
+{
+    if (N == NULL)
+        return 0;
+    return height(N->left) - height(N->right);
+}
+
+struct bst_node* insert(struct bst_node* node, struct rtable_entry key)
+{
+    /* If the tree is empty, return a new node */
+    if (node == NULL)
+        return newNode(key);
+    
+    /* Otherwise, recur down the tree */
+    if (key.prefix < node->key.prefix)
+        node->left = insert(node->left, key);
+    else if (key.prefix > node->key.prefix)
+        node->right = insert(node->right, key);
+    else
+        return node;
+
+    node->height = 1 + max(height(node->left), height(node->right));
+    int balance = getBalance(node);
+
+    if (balance > 1 && key.prefix < node->left->key.prefix)
+        return rightRotate(node);
+ 
+    // Right Right Case
+    if (balance < -1 && key.prefix > node->right->key.prefix)
+        return leftRotate(node);
+ 
+    // Left Right Case
+    if (balance > 1 && key.prefix > node->left->key.prefix)
+    {
+        node->left =  leftRotate(node->left);
+        return rightRotate(node);
+    }
+ 
+    // Right Left Case
+    if (balance < -1 && key.prefix < node->right->key.prefix)
+    {
+        node->right = rightRotate(node->right);
+        return leftRotate(node);
+    }
+ 
+    /* return the (unchanged) node pointer */
+    return node;
+}
+struct bst_node* search(struct bst_node* root, uint32_t key)
+{
+    // Base Cases: root is null or key is present at root
+    if (root == NULL || root->key.prefix == key)
+       return root;
+    
+    // Key is greater than root's key
+    if (root->key.prefix  < key)
+       return search(root->right, key);
+ 
+    // Key is smaller than root's key
+    return search(root->left, key);
+}
+
 // Converts a string from format b4.b3.b2.b1 to a 32bit unsigned integer
 // Eg: str_to_32b("192.1.4.0") = 3221292032
 uint32_t str_to_32b(char* str) {
@@ -31,7 +157,6 @@ uint32_t str_to_32b(char* str) {
     uint8_t b3;
     uint8_t b4;
     sscanf(str, "%hhu.%hhu.%hhu.%hhu", &b4, &b3, &b2, &b1);
-
     return  (b4 << 24)  | 
             (b3 << 16)  |
             (b2 << 8)   | b1;
@@ -39,20 +164,12 @@ uint32_t str_to_32b(char* str) {
 }
 
 // Stores the input from file fd into rtable as an array of rtable_entry
-int read_rtable(struct rtable_entry **rtable, FILE* fd) {
-    // Count the number of lines by counting \n characters 
-    char c;
-    c = getc(fd);
-    int entries;
-    entries = 0;
-    while(c != EOF) {
-        if(c == '\n')
-            entries++;
-        c = getc(fd);
-    }
+void read_rtable(struct bst_node **rtable, FILE* fd) {
+    // Count the number of entries by counting \n characters 
+
 
     // Allocate necessary memory for the entire routing table
-    *rtable = malloc(sizeof(struct rtable_entry) * entries);
+    struct rtable_entry new_entry;
     rewind(fd);
     
     // Declarations used to populate the routing table
@@ -76,35 +193,37 @@ int read_rtable(struct rtable_entry **rtable, FILE* fd) {
                                                         mask_str, \
                                                         &interf);
 
-        (*rtable)[i].prefix = str_to_32b(prefix_str);
-        (*rtable)[i].next_hop = str_to_32b(nhop_str);
-        (*rtable)[i].mask = str_to_32b(mask_str);
-        (*rtable)[i].interface = interf;
-    }
+        new_entry.prefix = str_to_32b(prefix_str);
+        new_entry.next_hop = str_to_32b(nhop_str);
+        new_entry.mask = str_to_32b(mask_str);
+        new_entry.interface = interf;
 
-    return entries;
+        if(i == 0){
+            *rtable = insert(*rtable, new_entry);
+        }
+            
+        else 
+            *rtable = insert(*rtable, new_entry);
+        }
+
 }
 
-struct rtable_entry* get_best_route(uint32_t dest_ip, struct rtable_entry* rtable, int rtable_size) {
+struct rtable_entry* get_best_route(uint32_t dest_ip, struct bst_node* rtable) {
 	
-    int i;
-	struct rtable_entry *cur_best_entry = NULL;
-	for (i = 0; i < rtable_size; i++){
-		if(cur_best_entry == NULL){
-			if((rtable[i].mask & dest_ip) == rtable[i].prefix){
-				cur_best_entry = &rtable[i];
-			}
-		}
-		else{
-			if((rtable[i].mask & dest_ip) == rtable[i].prefix){
-				if(rtable[i].mask > cur_best_entry->mask){
-					cur_best_entry = &rtable[i];
-				}
-			}
-		}
-	}
+    uint32_t mask;
+    mask = 0xFFFFFFFF;
+    struct bst_node* found = NULL;
+    while(mask != 0){
+        found = search(rtable, dest_ip & mask);
 
-	return cur_best_entry;
+        if(found != NULL)
+            return &found->key;
+
+        mask = mask << 1;
+        
+    }
+
+	return NULL;
 }
 struct arp_entry* get_arp(uint32_t dest_ip, struct arp_entry* arp_tb, int arp_t_size) {
     printf("LOOKING UP %x\n", dest_ip);
@@ -121,15 +240,25 @@ int add_to_arptable(struct arp_entry* arp_tb, struct arp_entry* new_arp, int arp
     arp_tb[arp_tb_size] = *new_arp;
 
     // DEBUG
-    printf("ADDED ARP MAC: %x:%x:%x:%x:%x:%x\n", arp_tb[arp_tb_size].mac[0], arp_tb[arp_tb_size].mac[1], arp_tb[arp_tb_size].mac[2], arp_tb[arp_tb_size].mac[3], arp_tb[arp_tb_size].mac[4], arp_tb[arp_tb_size].mac[5]);
-    printf("ADDED ARP IP : %x\n", arp_tb[arp_tb_size].ip);
+    // printf("ADDED ARP MAC: %x:%x:%x:%x:%x:%x\n", arp_tb[arp_tb_size].mac[0], arp_tb[arp_tb_size].mac[1], arp_tb[arp_tb_size].mac[2], arp_tb[arp_tb_size].mac[3], arp_tb[arp_tb_size].mac[4], arp_tb[arp_tb_size].mac[5]);
+    // printf("ADDED ARP IP : %x\n", arp_tb[arp_tb_size].ip);
     return arp_tb_size + 1;
 
 
 }
-
+void preOrder(struct bst_node *root)
+{
+    if(root != NULL)
+    {
+        preOrder(root->left);
+        printf("%d ", root->key.interface);
+        
+        preOrder(root->right);
+    }
+}
 int main(int argc, char *argv[])
 {
+
 	packet m;
 	int rc;
     char buf[20];
@@ -139,17 +268,15 @@ int main(int argc, char *argv[])
     DIE(fd <= 0, "Failed to open file");
 
     // Routing table init
-    struct rtable_entry* rtable = NULL;
-    int rtable_size;
-    rtable_size = read_rtable(&rtable, fd);
-
+    struct bst_node* rtable = NULL;
+    read_rtable(&rtable, fd);
     // ARP table init
     struct arp_entry* arptable = NULL;
     int arptable_size;
     // Size initially set to zero, future entries will increase it
     arptable_size = 0;
     arptable = malloc(sizeof(struct arp_entry) * ARPT_CAP);
-    
+
     queue routerQueue;
     routerQueue = queue_create();
 
@@ -193,7 +320,6 @@ int main(int argc, char *argv[])
                         printf("GOT ARP REQUEST FROM: %s\n", inet_ntop(AF_INET, &arp_hdr->spa, buf, 20));
                         // Send ARP REPLY from this interface
                         // Set destination mac address to sender
-                        memccpy(eth_hdr->ether_dhost, arp_hdr->sha, 0, 6);
                         memcpy(eth_hdr->ether_dhost, arp_hdr->sha, 6);
                         // Add the MAC of this interface to eth_header as source
                         get_interface_mac(j, eth_hdr->ether_shost);
@@ -201,7 +327,6 @@ int main(int argc, char *argv[])
                         send_arp(arp_hdr->spa, arp_hdr->tpa, eth_hdr, m.interface, htons(ARPOP_REPLY));
                         printf("SENT ARP REPLY TO: %s\n", inet_ntop(AF_INET, &arp_hdr->spa, buf, 20));
                         break;
-
                     } else if(ntohs(arp_hdr->op) == ARPOP_REPLY) {
 
                         if(get_arp(ntohl(arp_hdr->spa), arptable, arptable_size) != NULL){
@@ -223,10 +348,11 @@ int main(int argc, char *argv[])
                         struct iphdr *orig_ip_hdr = (struct iphdr *)(original->payload + sizeof(struct ether_header));
 
                         // Checksum was already verified, last step is to populate the target MAC and send
-                        best_route = get_best_route(ntohl(orig_ip_hdr->daddr), rtable, rtable_size);
+                        best_route = get_best_route(ntohl(orig_ip_hdr->daddr), rtable);
                         memcpy(orig_eth_hdr->ether_dhost, new_arp->mac, 6);                        
                         get_interface_mac(best_route->interface, orig_eth_hdr->ether_shost);
                         send_packet(best_route->interface, original);
+                        free(new_arp);
                         break;
                     }
                 }
@@ -249,7 +375,7 @@ int main(int argc, char *argv[])
             continue;
         }
         //TODO: FIND BEST ROUTE OR SEND ICMP HOST UNREACHABLE
-        best_route = get_best_route(ntohl(ip_hdr->daddr), rtable, rtable_size);
+        best_route = get_best_route(ntohl(ip_hdr->daddr), rtable);
         if(best_route == NULL) {
             memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, 6);
             get_interface_mac(m.interface, eth_hdr->ether_shost);
@@ -277,16 +403,13 @@ int main(int argc, char *argv[])
             // source ether addr set to interface MAC
             // destination set to broadcast MAC FF:FF:..:FF
             // type set to ETHERTYPE_ARP
-            struct ether_header* eth_arp_req = malloc(sizeof(struct ether_header));
 
-            get_interface_mac(best_route->interface, eth_arp_req->ether_shost);
-            memset(eth_arp_req->ether_dhost, 0xFF, 6);
-            eth_arp_req->ether_type = htons(ETHERTYPE_ARP);
-            printf("SHOST: %x:%x:%x:%x:%x:%x\n", eth_arp_req->ether_shost[0], eth_arp_req->ether_shost[1], eth_arp_req->ether_shost[2], eth_arp_req->ether_shost[3], eth_arp_req->ether_shost[4], eth_arp_req->ether_shost[5]);
-            printf("DHOST: %x:%x:%x:%x:%x:%x\n", eth_arp_req->ether_dhost[0], eth_arp_req->ether_dhost[1], eth_arp_req->ether_dhost[2], eth_arp_req->ether_dhost[3], eth_arp_req->ether_dhost[4], eth_arp_req->ether_dhost[5]);
+            get_interface_mac(best_route->interface, eth_hdr->ether_shost);
+            memset(eth_hdr->ether_dhost, 0xFF, 6);
+            eth_hdr->ether_type = htons(ETHERTYPE_ARP);
 
             // Send the ARP request
-            send_arp(htonl(best_route->next_hop), htonl(str_to_32b(get_interface_ip(best_route->interface))), eth_arp_req, best_route->interface, htons(ARPOP_REQUEST));
+            send_arp(htonl(best_route->next_hop), htonl(str_to_32b(get_interface_ip(best_route->interface))), eth_hdr, best_route->interface, htons(ARPOP_REQUEST));
             continue;
         }
 
@@ -296,4 +419,7 @@ int main(int argc, char *argv[])
         send_packet(best_route->interface, &m);
 
     }
+
+    free(arptable);
+    free(rtable);
 }
